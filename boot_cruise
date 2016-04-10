@@ -1,0 +1,40 @@
+WAIT UNTIL TRUE.
+CLEARSCREEN.
+SAS OFF.
+RCS OFF.
+AG1 OFF.
+BRAKES ON.
+LEGS OFF.
+
+COPY cruise_missile FROM 0.
+RUN ONCE cruise_missile.
+
+GLOBAL debug TO FALSE.
+SET cruise TO 200.
+SET oldKSC TO FALSE.
+SET islandAir TO FALSE.
+
+IF oldKSC {
+    SET tgtLat TO 20.5829.
+    SET tgtLong TO -146.5116.
+    SET tgtAlt TO LATLNG(tgtLat,tgtLong):TERRAINHEIGHT.
+} ELSE {
+    IF islandAir {
+        SET tgtLat TO -1.540833.
+        SET tgtLong TO -71.90972.
+        SET tgtAlt TO LATLNG(tgtLat,tgtLong):TERRAINHEIGHT.
+    } ELSE {
+        hudprint("Select Target and then Press '1' key to Launch").
+        WAIT UNTIL HASTARGET.
+        UNTIL HASTARGET AND AG1 {
+            AG1 off.
+            SET tgtLat to TARGET:LATITUDE.
+            SET tgtLong to TARGET:LONGITUDE.
+            SET tgtAlt to TARGET:ALTITUDE.
+        }.
+    }.
+}.
+
+
+
+cruiseMissile(tgtLat,tgtLong,tgtAlt,cruise).

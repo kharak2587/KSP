@@ -1,0 +1,355 @@
+//Fully automated cruise missile algorithm.
+//Author: Kharak2587
+
+
+FUNCTION hudprint {
+	LOCAL PARAMETER inputText,color IS yellow.
+	HUDTEXT(inputText,5,2,40,color,false).
+}.
+
+//fcn for printing with appropriate distance units m vs. km
+FUNCTION appDistPrint{
+	PARAMETER num,rnddig.
+	IF num < 1000 {
+		RETURN (ROUND(num,rnddig) + " m ").
+	} ELSE {
+		IF num/1000 < 1000 {
+			RETURN (ROUND(num/1000,rnddig) + " Km ").
+		} ELSE {
+			IF num/1000000 < 1000 {
+				RETURN (ROUND(num/1000000,rnddig) + " Mm ").
+			} ELSE {
+				RETURN (ROUND(num/1000000000,rnddig) + " Gm ").
+			}.
+		}.
+	}.
+}.
+
+//fcn for printing with appropriate Time units MM:SS
+FUNCTION appTimePrint{
+	PARAMETER time.//must be in total seconds
+	DECLARE LOCAL min TO 0.
+    DECLARE LOCAL sec TO 0.
+    DECLARE LOCAL minString TO " ".
+    DECLARE LOCAL secString TO " ".
+    DECLARE LOCAL timeString TO " ".
+    SET min TO FLOOR(time/60).
+    SET sec TO ROUND(MOD(time,60)).
+    IF min < 10 {
+        SET minString TO "0"+min.
+    } ELSE {
+        SET minString TO min.
+    }.
+    IF sec < 10 {
+        SET secString TO "0"+sec.
+    } ELSE {
+        SET secString TO sec.
+    }.
+    SET timeString TO minString+":"+secString.
+    RETURN timeString.
+}.
+
+FUNCTION navDisplay {
+    LOCAL PARAMETER phs, dist, t, eta, kpa, thr, pit, ht, ground, head, bear, srch, horizD, vEr, tAng, vAng.
+    DECLARE LOCAL leftBuffer TO 1.
+    DECLARE LOCAL topBuffer TO 1.
+    DECLARE LOCAL rowMarker TO 1.
+    print "Flight Mode       : " + phs + "           " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 2.
+    print "Mission Time / ETA: "+ appTimePrint(t) + "  /  " + appTimePrint(eta) + "               " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 2.
+    print "Dist to Tgt/Horiz : "+ appDistPrint(dist,1) + " / " + appDistPrint (horizD,1) + "          " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 1.
+    print "Cruising Height   : "+ appDistPrint(ht,1)  + "             " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 1.
+    print "Terrain Height    : "+ appDistPrint(ground,1)  + "             " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 1.
+    print "Terr Avoid Height : "+ appDistPrint(srch,1)+ "          " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 1.
+    print "Ht. Differential  : "+ appDistPrint(srch-ground,1)+ "          " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 2.
+    print "Pitch             : "+ round(pit,2) + " degrees       " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 2.
+    print "Heading to Tgt    : "+ round(head,2)+ " degrees       " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 1.
+    print "Bearing to Tgt    : "+ round(bear,2)+ " degrees       " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 2.
+    print "Dynamic Pressure  : "+ round(kpa,2) + " kPa           " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 1.
+    print "Throttle          : "+ round(thr*100,2) + " %             " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 2.
+    print "Tgt<>Nml Angle    : "+ round(tAng,1)+ " degrees       " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 1.
+    print "Vel<>Nml Angle    : "+ round(vAng,1)+ " degrees       " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 1.
+    print "Vel Angle Error   : "+ round(vEr,1)+ " degrees       " AT (leftBuffer, topBuffer + rowMarker).
+    SET rowMarker TO rowMarker + 1.
+}.
+
+FUNCTION findHighPoint {
+    LOCAL PARAMETER searchTime IS 15.//Defaults to 15 second search, with 0.25s intervals.
+    LOCAL maxAlt TO SHIP:GEOPOSITION:TERRAINHEIGHT.
+    LOCAL testAlt TO 0.//temp var
+    LOCAL nmlFacingVec TO VECTOREXCLUDE(SHIP:UP:VECTOR,SHIP:FACING:VECTOR):NORMALIZED.//vec facing || to grnd in dir of flight.
+    FROM {LOCAL timeX is 0.} UNTIL timeX > searchTime STEP {SET timeX to timeX+0.25.} DO {
+        //terrain height based on direction with magnitude of distance traveled at current velocity.
+        SET testAlt TO SHIP:BODY:GEOPOSITIONOF(SHIP:POSITION + (nmlFacingVec*(AIRSPEED*timeX))):TERRAINHEIGHT.
+        IF testAlt > maxAlt {
+            SET maxAlt TO testAlt.
+        }.
+    }.
+    IF maxAlt < 0 {
+        SET maxAlt TO 0. //ensure that it doesn't return a negative number (eg underwater)
+    }.
+    RETURN maxAlt.
+}.
+
+FUNCTION cruiseMissile{
+    LOCAL PARAMETER tgtLat, tgtLong, tgtASL, landCruiseAlt IS 300.
+    
+    //IF landCruiseAlt < 300 {SET landCruiseAlt TO 300.}.//Force low land floor of 300m. o/w risk of crash
+    
+    //Initialize local variables.
+    LOCAL tgtCoord TO LATLNG(tgtLat,tgtLong).
+    LOCAL LOCK tgtDist TO tgtCoord:ALTITUDEPOSITION(tgtASL):MAG. //smart estimate.
+    LOCAL LOCK tgtHead TO tgtCoord:HEADING.
+    LOCAL LOCK tgtBear TO tgtCoord:BEARING.
+    LOCAL LOCK tgtETA TO tgtDist/AIRSPEED.
+    LOCAL LOCK dynKPA TO SHIP:DYNAMICPRESSURE * constant:AtmToKPa.
+    LOCAL LOCK horizTgtDist TO SQRT(tgtDist^2-(ALTITUDE-tgtASL)^2).
+    LOCAL LOCK downVec TO (-1)*(SHIP:UP:VECTOR).
+    LOCAL LOCK tgtAng TO VANG(downVec,tgtCoord:ALTITUDEPOSITION(tgtASL)).
+    LOCAL LOCK velAng TO VANG(downVec,SHIP:VELOCITY:SURFACE).
+    LOCAL LOCK velErr TO velAng - tgtAng.
+    
+    DECLARE LOCAL currentHeight TO 0.
+    DECLARE LOCAL grndHt TO 0.
+    DECLARE LOCAL cruiseAlt TO landCruiseAlt.
+    DECLARE LOCAL thrott TO 0.
+    DECLARE LOCAL pitch TO 0.
+    DECLARE LOCAL searchHeight TO 0. //used for forward altitude scanning (to avoid mountains)
+    DECLARE LOCAL start_time TO ROUND(TIME:SECONDS,1).
+    DECLARE LOCAL timeHack TO 0.
+    LOCK timeHack TO Round(TIME:SECONDS - start_time,1).
+    DECLARE LOCAL phase TO "aim".
+    
+    //Define the PID loop for adjusting throttle during cruise.
+    DECLARE LOCAL limKPA to 25.
+    DECLARE LOCAL kpaPVrange TO 50.
+    DECLARE LOCAL kpaOPrange TO 1.
+    DECLARE LOCAL kpaP TO 15.//proportional gain
+    DECLARE LOCAL kpaI TO 1.5.
+    DECLARE LOCAL atmoEff_PID TO PIDLOOP(kpaP*(kpaOPrange/kpaPVrange),kpaI*(kpaOPrange/kpaPVrange),0).
+    SET atmoEff_PID:MINOUTPUT TO 0.
+    SET atmoEff_PID:MAXOUTPUT TO 1.
+    SET atmoEff_PID:SETPOINT TO limKPA.
+    
+    //Define PID for altitude.
+    DECLARE LOCAL altPVrange TO 1000.//altitude process variable can change by ~1000m
+    DECLARE LOCAL altOPrange TO 90.//alt output can change by roughly 90 degrees.
+    DECLARE LOCAL altP TO 0.5.//proportional gain
+    DECLARE LOCAL altI TO 0.033.
+    DECLARE LOCAL alt_PID TO PIDLOOP(altP*(altOPrange/altPVrange),altI*(altOPrange/altPVrange),0).
+    SET alt_PID:MINOUTPUT TO -20.//max pitch down
+    SET alt_PID:MAXOUTPUT TO 20.//routine pitch up (can be adjusted below as necessary)
+    SET alt_PID:SETPOINT TO cruiseAlt.
+    
+    //Define PID for final targeting (Angles).
+    DECLARE LOCAL angP TO 10.//proportional gain
+    DECLARE LOCAL angI TO 1.
+    DECLARE LOCAL ang_PID TO PIDLOOP(angP,angI,0).
+    SET ang_PID:MINOUTPUT TO -85.//max pitch down
+    SET ang_PID:MAXOUTPUT TO 20.//max pitch up
+    SET ang_PID:SETPOINT TO 0.//aim to minimize angle between velocity & distance vectors
+    
+    //Trigger to eject LFOX boosters & tanks. Should only execute once.
+    WHEN SHIP:OXIDIZER < 1 THEN STAGE.
+    
+    //setup for logging
+    IF debug {
+        SWITCH TO 0.
+        IF EXISTS(cruise_log.csv) {DELETE cruise_log.csv.}.
+        LOG "Throttle PID Tuning   Kp: " + kpaP + "  " + "Ki: " + kpaI TO cruise_log.csv.
+        LOG "Altitude PID Tuning   Kp: " + altP + "  " + "Ki: " + altI TO cruise_log.csv.
+        LOG "AngleTgt PID Tuning   Kp: " + angP + "  " + "Ki: " + angI TO cruise_log.csv.
+        LOG "t, dist, alt, grndHt, srchHt, kPa, kPA error, Alt error, Ang Err " TO cruise_log.csv.
+    
+        DECLARE LOCAL errKPA TO 0.
+        DECLARE LOCAL errALT TO 0.
+        DECLARE LOCAL startDist TO tgtDist.
+        
+
+        LOCK errKPA TO abs(round((dynKPA - limKPA)/limKPA,2)).
+        LOCK errALT TO abs(round((currentHeight - cruiseAlt)/cruiseAlt,2)).
+        LOCK logLine TO
+                    timeHack + ", " + 
+                    round(startDist - tgtDist,2) + ", " + 
+                    round(ALTITUDE,2) + ", " + 
+                    round(grndHt,2) + ", " +
+                    round(searchHeight,2) + ", " +
+                    round(dynKPA,2) + ", " + 
+                    errKPA + ", " + 
+                    errAlt + ", " + 
+                    Round(velErr,2).
+        hudprint("debug mode enabled").
+    }.
+    
+    ////////////////////
+    //MAINLINE PROCESS//
+    ////////////////////
+    UNTIL SHIP:ISDEAD{    
+        //These lines determine if the missile is flying over water.
+        SET cruiseAlt TO landCruiseAlt.
+        SET grndHt TO SHIP:GEOPOSITION:TERRAINHEIGHT.
+        IF grndHt <= 0 {
+            SET grndHt TO 0.
+            SET cruiseAlt TO 100.//wavetop flight
+        }.
+        SET currentHeight TO (ALTITUDE - grndHt).
+        
+        IF phase = "aim" {
+            hudprint("Aiming").
+            BRAKES OFF.
+            LEGS OFF.
+            LOCK WHEELSTEERING TO tgtHead.
+            LOCK WHEELTHROTTLE TO 0.05.
+            WAIT UNTIL ABS(tgtBear) < 1.
+            LOCK WHEELTHROTTLE TO 0.
+            BRAKES ON.
+            LEGS ON.
+            WAIT 4.
+            SET phase to "launchrocket".
+        }.
+            
+        IF phase = "launchrocket" {
+            hudprint("Initiating Countdown",red).
+            SET thrott to 1.
+            LOCK THROTTLE TO thrott.
+            SET pitch to 25.
+            FROM {local x is 3.} UNTIL x = 0 STEP {set x to x-1.} DO {
+                hudprint("T - " + x,red).
+                WAIT 1.
+            }.
+            STAGE.
+            hudprint("LAUNCH!",red).
+            SET start_time TO ROUND(TIME:SECONDS,1).
+            IF tgtDist < 300000 {
+                SET phase TO "ascent".
+                SET pitch to 20.
+            } ELSE {
+                SET phase TO "highAscent".
+                SET pitch to 33.
+                WAIT 3.//add'l wait time.
+            }.
+            WAIT 3.
+        }.
+        
+        IF phase = "ascent" {
+            IF currentHeight > cruiseAlt {
+                hudprint("Beginning cruise").
+                SET phase TO "cruise".
+            }.
+        }.
+        
+        IF phase = "highAscent" {
+            SET pitch TO 33.
+            IF ALTITUDE > 18000 {
+                SET phase TO "highCruise".
+                SET alt_PID:SETPOINT TO 20000.
+                SET alt_PID:MINOUTPUT TO -10.
+                SET alt_PID:MAXOUTPUT TO 10.
+                SET alt_PID:KP TO altP*((alt_PID:MAXOUTPUT-alt_PID:MINOUTPUT)/altPVrange).//update gain
+                SET alt_PID:KI TO altI*((alt_PID:MAXOUTPUT-alt_PID:MINOUTPUT)/altPVrange).//update gain
+            }.
+            SET thrott TO atmoEff_PID:UPDATE(TIME:SECONDS, dynKPA).
+        }.
+        
+        
+        IF phase = "highCruise" {
+            IF tgtDist < 150000 {
+                SET phase TO "descent".
+                SET alt_PID:SETPOINT TO 1000.
+                SET alt_PID:MINOUTPUT TO -15.
+                SET alt_PID:MAXOUTPUT TO 15.
+                SET alt_PID:KP TO altP*((alt_PID:MAXOUTPUT-alt_PID:MINOUTPUT)/altPVrange).//update gain
+                SET alt_PID:KI TO altI*((alt_PID:MAXOUTPUT-alt_PID:MINOUTPUT)/altPVrange).//update gain
+            }.
+            SET pitch TO alt_PID:UPDATE(TIME:SECONDS,ALTITUDE).
+            SET thrott TO atmoEff_PID:UPDATE(TIME:SECONDS, dynKPA).
+        }.
+        
+        IF phase = "descent" {
+            IF ALTITUDE < 5000 {
+                SET phase TO "cruise".
+                SET alt_PID:SETPOINT TO cruiseAlt.
+                SET alt_PID:MINOUTPUT TO -20.
+                SET alt_PID:MAXOUTPUT TO 20.
+                SET alt_PID:KP TO altP*((alt_PID:MAXOUTPUT-alt_PID:MINOUTPUT)/altPVrange).//update gain
+                SET alt_PID:KI TO altI*((alt_PID:MAXOUTPUT-alt_PID:MINOUTPUT)/altPVrange).//update gain
+            }.
+            SET pitch TO alt_PID:UPDATE(TIME:SECONDS,currentHeight).
+            SET thrott TO atmoEff_PID:UPDATE(TIME:SECONDS, dynKPA).
+        }.
+        
+        IF phase = "cruise" {            
+            //Logic below ensures that the PID loop doesn't over-pitch up over level ground, but can for steep inclines.
+            SET searchHeight TO findHighPoint().
+            IF grndHt <> 0 { //needs to check to avoid Div by zero error.
+                IF (searchHeight/grndHt) > 1.2 {
+                    SET alt_PID:MAXOUTPUT TO 67.//steeper pitch up
+                } ELSE {
+                    SET alt_PID:MAXOUTPUT TO 20.//routine pitch up
+                }.
+            }.
+            IF horizTgtDist < 6000 {
+                SET phase TO "arm".
+                hudprint("*Climbing above target*").
+            }.
+            SET pitch TO alt_PID:UPDATE(TIME:SECONDS,currentHeight-(searchHeight-grndHt)).
+            SET thrott TO atmoEff_PID:UPDATE(TIME:SECONDS, dynKPA).
+        }.
+        
+        IF phase = "arm" {
+            SET pitch to 33.
+            SET searchHeight TO findHighPoint(tgtETA).//find highest elev inbound to tgt in last 10km
+            
+            IF ALTITUDE > (searchHeight+cruiseAlt)
+                AND horizTgtDist < 4000
+                AND tgtAng < 65 {
+                    SET phase TO "kill".
+            }.
+            SET thrott TO atmoEff_PID:UPDATE(TIME:SECONDS, dynKPA).
+        }.
+        
+        IF phase = "kill" {
+            hudprint("*FINAL TARGETING*").
+            //direct aiming once within 1.5 seconds of the target.
+            IF tgtDist < (1.5*AIRSPEED) {
+                SET phase TO "finalKill".
+            }.
+            SET pitch TO ang_PID:UPDATE(TIME:SECONDS,velErr).
+            SET thrott TO atmoEff_PID:UPDATE(TIME:SECONDS, dynKPA).
+        }.
+        
+        IF phase = "finalKill" {
+            hudprint("Going for the kill!",red).
+            UNTIL SHIP:ISDEAD {
+                LOCK STEERING TO tgtCoord:ALTITUDEPOSITION(tgtASL).
+                LOCK THROTTLE TO 0.
+            }.
+        }.
+                
+        navDisplay(phase, tgtDist, timeHack, tgtETA, dynKPA, thrott, pitch, currentHeight, grndHt, tgtHead, tgtBear, searchHeight, horizTgtDist, velErr, tgtAng, velAng).
+        LOCK STEERING TO LOOKDIRUP(HEADING(tgtHead,pitch):FOREVECTOR,SHIP:UP:VECTOR).
+        LOCK THROTTLE TO thrott.
+        
+        IF debug {
+            LOG logLine TO cruise_log.csv.
+            SET distVect TO VECDRAW(V(0,0,0),tgtCoord:ALTITUDEPOSITION(tgtASL),red,"target",1,true).
+            SET velVect TO VECDRAW(V(0,0,0),SHIP:VELOCITY:SURFACE,green,"velocity",1,true).
+
+        }.
+        
+        WAIT UNTIL TRUE.//runs every phys tick.
+    }.
+}.
